@@ -135,7 +135,7 @@ p1 <- ggplot(sim_data, aes(x = Time, y = Iso)) +
   geom_point(color = "gray40") +
   geom_point(aes(y = BaseSignal), color = "blue", size = 1) +
   geom_vline(xintercept = c(times[core_end], times[transition1], times[transition2], times[transition3]), 
-             pointtype = "dashed", color = "red") +
+             linetype = "dashed", color = "red") +
   labs(title = "Simulated Otolith Isotope Data with 5 States", 
        subtitle = "Gray: Noisy signal, Blue: True underlying states, Red: Transition points",
        x = "Time (Distance from core)", y = "87Sr/86Sr") +
