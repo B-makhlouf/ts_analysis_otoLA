@@ -1,102 +1,142 @@
-# GAM Smoothing for Otolith LA-ICPMS Data
-# ==================================
-# This script implements a basic Generalized Additive Model (GAM) for smoothing 
-# strontium isotope time series from otolith LA-ICPMS measurements
-
 # Load required libraries
-library(mgcv)     # For GAM modeling
-library(ggplot2)  # For visualization
+library(mgcv)
+library(ggplot2)
 
-# Read in the simulated data
-data <- read.csv("simulated_isotope_data.csv")
-
-# Look at the data structure
-head(data)
-summary(data$Iso)
-
-# Fit GAM model to isotope data
-# The 'k' parameter controls smoothness (higher k = more flexible curve)
-# Method "REML" (Restricted Maximum Likelihood) helps prevent overfitting
-gam_model <- gam(Iso ~ s(Time, k=30), data = data, method = "REML")
-
-# Display basic model summary
-summary(gam_model)
-
-# Extract model predictions
-predictions <- predict(gam_model, se.fit = TRUE)
-
-# Add predictions to the original data
-data$fitted <- predictions$fit
-data$se <- predictions$se.fit
-data$lower_ci <- data$fitted - 1.96 * data$se
-data$upper_ci <- data$fitted + 1.96 * data$se
-
-# Simple visualization
-p <- ggplot(data) +
-  # Raw data points in gray
-  geom_point(aes(x = Time, y = Iso), alpha = 0.3, color = "gray40") +
-  # GAM fit in blue
-  geom_line(aes(x = Time, y = fitted), color = "blue", size = 1) +
-  # 95% confidence interval as shaded region
-  geom_ribbon(aes(x = Time, ymin = lower_ci, ymax = upper_ci), 
-              alpha = 0.2, fill = "blue") +
-  # If true signal is available in the data, add it for comparison
-  {if("BaseSignal" %in% names(data)) 
-    geom_line(aes(x = Time, y = BaseSignal), color = "red", linetype = "dashed")
-  } +
-  # Labels and theme
-  labs(title = "GAM Smoothing of Otolith LA-ICPMS Data",
-       subtitle = "Blue line: GAM estimate with 95% CI, Red dashed line: True signal (if available)",
-       x = "Time (Distance from core)",
-       y = "87Sr/86Sr") +
-  theme_minimal()
-
-# Display the plot
-print(p)
-
-# Optional: Save the plot
-# ggsave("gam_smoothing_plot.png", p, width = 10, height = 6)
-
-# Alternative visualization with different smoothing parameters
-# Try a few different values for the smoothing parameter k
-k_values <- c(10, 30, 60, 100)
-
-# Create an empty list to store the models
-models_list <- list()
-
-# Fit models with different k values
-for (k in k_values) {
-  models_list[[as.character(k)]] <- gam(Iso ~ s(Time, k=k), data = data, method = "REML")
+# Function to run simplified GAM analysis and create facet plots by k value for each spline type
+plot_gam_splines_by_method <- function(data, dataset_name) {
+  # Create directories for results
+  dir.create("Figures", showWarnings = FALSE)
+  dir.create("Figures/GAM", showWarnings = FALSE)
+  dir.create(paste0("Figures/GAM/", dataset_name), showWarnings = FALSE)
+  
+  # Define k values to test
+  k_values <- c(10, 30, 75, 150)
+  
+  # Define spline types to test
+  spline_types <- c("tp", "cr", "ps", "ad")
+  
+  # Nice labels for the spline types
+  spline_labels <- c(
+    tp = "Thin Plate Splines",
+    cr = "Cubic Regression Splines",
+    ps = "P-Splines",
+    ad = "Adaptive Splines"
+  )
+  
+  # Process each spline type
+  for (spline in spline_types) {
+    # Dataframe to store predictions for this spline type
+    spline_predictions <- data.frame()
+    
+    # Process each k value for this spline type
+    for (k in k_values) {
+      # Print status
+      cat("Dataset:", dataset_name, "- Fitting model with spline type:", spline, "and k =", k, "\n")
+      
+      # Try to fit the model
+      tryCatch({
+        # Fit the model based on spline type
+        if (spline == "ad") {
+          model <- gam(Iso ~ s(Time, k=k, bs=spline, m=2), data = data, method = "REML")
+        } else {
+          model <- gam(Iso ~ s(Time, k=k, bs=spline), data = data, method = "REML")
+        }
+        
+        # Get predictions
+        preds <- predict(model, se.fit = TRUE)
+        
+        # Calculate effective degrees of freedom (edf)
+        edf <- sum(model$edf)
+        
+        # Add to predictions dataframe
+        spline_predictions <- rbind(spline_predictions, data.frame(
+          Time = data$Time,
+          fitted = preds$fit,
+          se = preds$se.fit,
+          lower_ci = preds$fit - 1.96 * preds$se.fit,
+          upper_ci = preds$fit + 1.96 * preds$se.fit,
+          k = factor(k),
+          edf = round(edf, 1)
+        ))
+      }, error = function(e) {
+        cat("Error fitting model with spline type:", spline, "and k =", k, "\n")
+        cat("Error message:", conditionMessage(e), "\n")
+      })
+    }
+    
+    # If we have predictions for this spline type, create the facet plot
+    if (nrow(spline_predictions) > 0) {
+      # Create the facet plot for this spline type
+      p <- ggplot() +
+        geom_point(data = data, aes(x = Time, y = Iso), alpha = 0.2, color = "gray50", size = 0.7) +
+        geom_line(data = spline_predictions, aes(x = Time, y = fitted), color = "blue", size = 1) +
+        facet_wrap(~ k, ncol = 2, labeller = labeller(k = function(k) paste0("k = ", k, " (edf = ", 
+                                                                             subset(spline_predictions, k == k)$edf[1], ")"))) +
+        labs(title = paste(dataset_name, "-", spline_labels[spline]),
+             subtitle = "Panels show different k values (with effective degrees of freedom)",
+             x = "Time", y = "Isotope Ratio") +
+        theme_minimal() +
+        theme(
+          strip.background = element_rect(fill = "lightblue", color = "black"),
+          strip.text = element_text(face = "bold"),
+          plot.title = element_text(size = 14, face = "bold"),
+          plot.subtitle = element_text(size = 10)
+        )
+      
+      # Add the true signal line if available (for simulated data)
+      if ("BaseSignal" %in% colnames(data)) {
+        p <- p + geom_line(data = data, aes(x = Time, y = BaseSignal), 
+                           color = "red", linetype = "dashed", size = 1)
+      }
+      
+      # Save the plot in the Figures/GAM directory
+      output_file <- paste0("Figures/GAM/", dataset_name, "/", spline, "_faceted_by_k.png")
+      ggsave(output_file, p, width = 10, height = 8, dpi = 300)
+      
+      cat("Created plot for", spline_labels[spline], "saved to", output_file, "\n")
+    } else {
+      cat("No predictions generated for", spline, "on", dataset_name, "\n")
+    }
+  }
+  
+  cat("Completed analysis for", dataset_name, "\n")
 }
 
-# Extract predictions from each model
-for (k in k_values) {
-  k_str <- as.character(k)
-  pred <- predict(models_list[[k_str]], se.fit = TRUE)
-  data[[paste0("fitted_k", k)]] <- pred$fit
+# Function to find and load data files safely
+safe_read_csv <- function(file_patterns, name) {
+  for (pattern in file_patterns) {
+    # Find files matching the pattern
+    files <- list.files(pattern = pattern, recursive = TRUE, full.names = TRUE)
+    
+    if (length(files) > 0) {
+      cat("Found", name, "file:", files[1], "\n")
+      return(read.csv(files[1]))
+    }
+  }
+  
+  cat("Could not find any", name, "files matching patterns:", paste(file_patterns, collapse=", "), "\n")
+  return(NULL)
 }
 
-# Plot comparing different smoothing levels
-p_compare <- ggplot(data) +
-  geom_point(aes(x = Time, y = Iso), alpha = 0.1, color = "gray40") +
-  geom_line(aes(x = Time, y = fitted_k10, color = "k=10")) +
-  geom_line(aes(x = Time, y = fitted_k30, color = "k=30")) +
-  geom_line(aes(x = Time, y = fitted_k60, color = "k=60")) +
-  geom_line(aes(x = Time, y = fitted_k100, color = "k=100")) +
-  {if("BaseSignal" %in% names(data)) 
-    geom_line(aes(x = Time, y = BaseSignal, color = "True Signal"), linetype = "dashed")
-  } +
-  scale_color_manual(name = "Smoothing Level", 
-                     values = c("k=10" = "blue", "k=30" = "green", 
-                                "k=60" = "purple", "k=100" = "orange",
-                                "True Signal" = "red")) +
-  labs(title = "Comparison of GAM Smoothing Levels",
-       x = "Time (Distance from core)",
-       y = "87Sr/86Sr") +
-  theme_minimal()
+# Try to read the simulated data
+simulated_data <- safe_read_csv(
+  c("simulated_isotope_data\\.csv$", 
+    "sim.*\\.csv$"),
+  "simulated"
+)
 
-# Display the comparison plot
-print(p_compare)
+if (!is.null(simulated_data)) {
+  plot_gam_splines_by_method(simulated_data, "simulated")
+}
 
-# Optional: Save the comparison plot
-# ggsave("gam_smoothing_comparison.png", p_compare, width = 10, height = 6)
+# Try to read the real data
+real_data <- safe_read_csv(
+  c("2016_yk_006\\.csv$"),
+  "real otolith"
+)
+
+if (!is.null(real_data)) {
+  plot_gam_splines_by_method(real_data, "2016_yk_006")
+}
+
+cat("Analysis complete. Facet plots saved in Figures/GAM directory.\n")
